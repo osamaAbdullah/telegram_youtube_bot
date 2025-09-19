@@ -2,58 +2,90 @@ import os
 import logging
 from pytube import YouTube
 from telegram import Update
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+# Note the new imports: Application, ContextTypes, and filters
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # Set up logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 # --- Bot Command Handlers ---
-def start(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text("Hi! Send me a YouTube link and I'll download it for you.")
+# All handler functions are now 'async def'
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sends a welcome message when the /start command is issued."""
+    user = update.effective_user
+    welcome_message = (
+        f"Hi {user.first_name}!\n\n"
+        "Just send me a YouTube video link and I'll download and send it to you."
+    )
+    # API calls like reply_text must now be 'await'ed
+    await update.message.reply_text(welcome_message)
 
-def download_video(update: Update, context: CallbackContext) -> None:
+async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles messages containing YouTube links."""
     video_url = update.message.text
     chat_id = update.message.chat_id
+
     try:
-        processing_message = update.message.reply_text("🔗 Processing your link...")
+        # Initial feedback to the user
+        processing_message = await update.message.reply_text("🔗 Got your link! Processing...")
+        
         yt = YouTube(video_url)
+        
+        # Filter for progressive mp4 streams and get the highest resolution
         stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
         
         if not stream:
-            update.message.reply_text("Could not find a downloadable video stream.")
+            await update.message.reply_text("Couldn't find a downloadable video stream.")
             return
 
-        processing_message.edit_text(f"📥 Downloading '{yt.title}'...")
+        await processing_message.edit_text(f"✅ Found it! Downloading '{yt.title}'...")
+
+        # Download the video
         video_path = stream.download()
 
-        processing_message.edit_text("📤 Uploading to Telegram...")
+        await processing_message.edit_text("📥 Download complete! Uploading to Telegram...")
+
+        # Send the video file to the user
         with open(video_path, 'rb') as video_file:
-            context.bot.send_video(chat_id=chat_id, video=video_file, caption=yt.title, supports_streaming=True)
+            await context.bot.send_video(
+                chat_id=chat_id,
+                video=video_file,
+                caption=yt.title,
+                supports_streaming=True
+            )
         
-        processing_message.delete()
+        # Clean up
+        await processing_message.delete()
         os.remove(video_path)
+
     except Exception as e:
-        logger.error(f"Error: {e}")
-        update.message.reply_text("❌ Oops! Something went wrong. Please check the link and try again.")
+        logger.error(f"An error occurred: {e}")
+        await update.message.reply_text(
+            "❌ Oops! Something went wrong. Please make sure you sent a valid YouTube video URL."
+        )
 
 # --- Main Bot Setup ---
 def main() -> None:
-    # Get the token from an environment variable for security
+    """Start the bot."""
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TOKEN:
         raise ValueError("No TELEGRAM_BOT_TOKEN found in environment variables!")
 
-    updater = Updater(TOKEN)
-    dispatcher = updater.dispatcher
+    # The main function now uses the new Application builder pattern
+    application = Application.builder().token(TOKEN).build()
 
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, download_video))
+    # Register command handlers
+    application.add_handler(CommandHandler("start", start))
 
-    # We will use webhooks for deployment, not polling
-    #updater.start_polling()
-    #updater.idle()
-    print("Bot setup complete. Ready for deployment.")
+    # The MessageHandler now uses filters.TEXT & ~filters.COMMAND
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, download_video))
+
+    # Start the Bot by polling
+    print("Bot is starting...")
+    application.run_polling()
 
 
 if __name__ == '__main__':
